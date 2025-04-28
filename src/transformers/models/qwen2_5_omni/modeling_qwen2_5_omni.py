@@ -4609,7 +4609,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         processed_thinker_hidden = (
             (embeds_to_talker,) + thinker_result.hidden_states[0][1:],
         ) + thinker_result.hidden_states[1:]
-        thinker_generate_ids = thinker_result.sequences[:, input_ids.size(1) :].to(self.talker.device)
+        
         thinker_token_embeds = [
             token_hidden_states[0].to(self.talker.device) for token_hidden_states in processed_thinker_hidden
         ]
@@ -4617,21 +4617,25 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             token_hidden_states[-1].to(self.talker.device) for token_hidden_states in processed_thinker_hidden
         ]
 
+        # ===  talker input：talker_input_text_ids
         talker_text_bos_token = speaker_params["bos_token"]
-        talker_input_text_ids = torch.cat( # talker input 
+        thinker_generate_ids = thinker_result.sequences[:, input_ids.size(1) :].to(self.talker.device)
+        talker_input_text_ids = torch.cat( # talker input。它的shape，比 input_ids 多了 2
             [
-                input_ids.to(self.talker.device),
-                torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.talker.device),
-                thinker_generate_ids[:, :1],
+                input_ids.to(self.talker.device),                                                      # 原始 prompt 的 token ids
+                torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.talker.device),  # 分隔符特殊token
+                thinker_generate_ids[:, :1],                                                           # thinker 生成的结果的 token ids
             ],
             dim=-1,
         )
 
-        talker_input_ids = torch.cat( # talker input
+        # === talker input: talker_input_ids
+        talker_input_ids = torch.cat( # 它的shape，比 input_ids 多了两个特殊token
             [
-                torch.full_like(input_ids, fill_value=self.talker.codec_mask_token, device=self.talker.device),
-                torch.tensor([[self.talker.codec_pad_token]], dtype=torch.long, device=self.talker.device),
-                torch.tensor([[self.talker.codec_bos_token]], dtype=torch.long, device=self.talker.device),
+                torch.full_like(input_ids, fill_value=self.talker.codec_mask_token, device=self.talker.device), # 生成一个和 input_ids 一模一样形状的 tensor，里面的每个元素都填成 self.talker.codec_mask_token
+                                                                                                                # self.talker.codec_mask_token 乃一个特殊token id
+                torch.tensor([[self.talker.codec_pad_token]], dtype=torch.long, device=self.talker.device),     # codec_pad_token: 乃一个特殊token id
+                torch.tensor([[self.talker.codec_bos_token]], dtype=torch.long, device=self.talker.device),     # codec_bos_token: 乃一个特殊token id
             ],
             dim=1,
         )
