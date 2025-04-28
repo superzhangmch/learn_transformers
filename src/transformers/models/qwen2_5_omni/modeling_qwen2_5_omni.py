@@ -4374,17 +4374,19 @@ class Qwen2_5OmniToken2WavModel(Qwen2_5OmniPreTrainedModel):
 
 @add_start_docstrings(
     """
-    The full Qwen2.5Omni model, a multimodal model composed of 3 sub-models:
-    - [`Qwen2_5OmniThinkerForConditionalGeneration`]:
-    a causal auto-regressive transformer takes text, audio, image, video as input and predict text tokens.
-    - [`Qwen2_5OmniTalkerForConditionalGeneration`]:
-    a causal auto-regressive transformer takes thinker hidden states and response as input and predict speech tokens.
-    - [`Qwen2_5OmniToken2WavModel`]:
-    a DiT model take speech tokens as input and predict mel spectrogram and a BigVGAN vocoder take mel spectrogram as input and predict waveform.
+    The full Qwen2.5Omni model, a multimodal model composed of 3 sub-models: # 共三个子 model
+    1. [`Qwen2_5OmniThinkerForConditionalGeneration`]:
+       a causal auto-regressive transformer takes text, audio, image, video as input and predict text tokens.
+    
+    2. [`Qwen2_5OmniTalkerForConditionalGeneration`]:
+       a causal auto-regressive transformer takes thinker hidden states and response as input and predict speech tokens.
+    
+    3. [`Qwen2_5OmniToken2WavModel`]:
+       a DiT model take speech tokens as input and predict mel spectrogram and a BigVGAN vocoder take mel spectrogram as input and predict waveform.
     """,
     QWEN2_5OMNI_START_DOCSTRING.format(config_class=Qwen2_5OmniConfig),
 )
-class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, GenerationMixin):
+class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, GenerationMixin): # 这个是入口的 main class
     config_class = Qwen2_5OmniConfig
     _no_split_modules = [
         "Qwen2_5OmniTalkerForConditionalGeneration",
@@ -4394,7 +4396,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
     def __init__(self, config):
         super().__init__(config)
 
-        self.thinker = Qwen2_5OmniThinkerForConditionalGeneration(config.thinker_config)
+        self.thinker = Qwen2_5OmniThinkerForConditionalGeneration(config.thinker_config) # 三个 sub models 中的第 1 个
 
         self.has_talker = config.enable_audio_output
         self.speaker_map = {}
@@ -4403,8 +4405,8 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         self.post_init()
 
     def enable_talker(self):
-        self.talker = Qwen2_5OmniTalkerForConditionalGeneration(self.config.talker_config)
-        self.token2wav = Qwen2_5OmniToken2WavModel(self.config.token2wav_config)
+        self.talker = Qwen2_5OmniTalkerForConditionalGeneration(self.config.talker_config)  # 三个 sub models 中的第 2 个
+        self.token2wav = Qwen2_5OmniToken2WavModel(self.config.token2wav_config)            # 三个 sub models 中的第 3 个。不同说话人（不同音色）就是作为条件传给了它
         self.token2wav.float()
         self.has_talker = True
 
@@ -4576,7 +4578,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
 
         # 2. Generate speech tokens from talker module
         embeds_to_talker = thinker_result.hidden_states[0][0].clone().to(self.talker.device)
-        if thinker_kwargs.get("input_features", None) is not None:
+        if thinker_kwargs.get("input_features", None) is not None: # 如果input中有 audio 则会进入此分支
             audio_ids_mask = input_ids == self.config.thinker_config.audio_token_index
             audio_mask = audio_ids_mask.unsqueeze(-1).expand_as(embeds_to_talker).to(embeds_to_talker.device)
             audio_mask_tensor = torch.zeros(
@@ -4584,8 +4586,8 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
                 dtype=embeds_to_talker.dtype,
                 device=self.talker.device,
             )
-            embeds_to_talker.masked_scatter_(audio_mask, audio_mask_tensor)
-        if thinker_kwargs.get("pixel_values", None) is not None:
+            embeds_to_talker.masked_scatter_(audio_mask, audio_mask_tensor) # 按 audio_mask 的指示，mask 命中部分设置值为0
+        if thinker_kwargs.get("pixel_values", None) is not None: # 如果input中有 image 则会进入此分支
             image_ids_mask = input_ids == self.config.thinker_config.image_token_index
             image_mask = image_ids_mask.unsqueeze(-1).expand_as(embeds_to_talker).to(embeds_to_talker.device)
             image_mask_tensor = torch.zeros(
@@ -4594,7 +4596,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
                 device=self.talker.device,
             )
             embeds_to_talker.masked_scatter_(image_mask, image_mask_tensor)
-        if thinker_kwargs.get("pixel_values_videos", None) is not None:
+        if thinker_kwargs.get("pixel_values_videos", None) is not None: # 如果input中有 audio 则会进入此分支
             video_ids_mask = input_ids == self.config.thinker_config.video_token_index
             video_mask = video_ids_mask.unsqueeze(-1).expand_as(embeds_to_talker).to(embeds_to_talker.device)
             video_mask_tensor = torch.zeros(
@@ -4616,7 +4618,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         ]
 
         talker_text_bos_token = speaker_params["bos_token"]
-        talker_input_text_ids = torch.cat(
+        talker_input_text_ids = torch.cat( # talker input 
             [
                 input_ids.to(self.talker.device),
                 torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.talker.device),
@@ -4625,7 +4627,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             dim=-1,
         )
 
-        talker_input_ids = torch.cat(
+        talker_input_ids = torch.cat( # talker input
             [
                 torch.full_like(input_ids, fill_value=self.talker.codec_mask_token, device=self.talker.device),
                 torch.tensor([[self.talker.codec_pad_token]], dtype=torch.long, device=self.talker.device),
@@ -4649,14 +4651,14 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         )
 
         eos_embedding = thinker_embed_tokens(
-            torch.tensor([[self.talker.text_eos_token]], dtype=torch.long, device=self.thinker.device)
-        ).to(self.talker.device)
+               torch.tensor([[self.talker.text_eos_token]], dtype=torch.long, device=self.thinker.device)
+           ).to(self.talker.device)
 
         pad_embedding = thinker_embed_tokens(
-            torch.tensor([[self.talker.text_pad_token]], dtype=torch.long, device=self.thinker.device)
-        ).to(self.talker.device)
+               torch.tensor([[self.talker.text_pad_token]], dtype=torch.long, device=self.thinker.device)
+           ).to(self.talker.device)
 
-        thinker_reply_part = torch.cat(
+        thinker_reply_part = torch.cat( # talker input
             [
                 thinker_reply_part[:, 1:, :],
                 eos_embedding,
@@ -4665,6 +4667,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             dim=1,
         )
 
+        # === talker input: talker_attention_mask
         talker_attention_mask = None
         if "attention_mask" in kwargs:
             talker_attention_mask = torch.cat(
@@ -4697,14 +4700,14 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
 
 
 __all__ = [
-    "Qwen2_5OmniForConditionalGeneration",
-    "Qwen2_5OmniThinkerTextModel",
-    "Qwen2_5OmniThinkerForConditionalGeneration",
+    "Qwen2_5OmniForConditionalGeneration",        # main 入口 model
+    "Qwen2_5OmniThinkerTextModel",         
+    "Qwen2_5OmniThinkerForConditionalGeneration", # 三个 sub models 中的第一个， thinker
     "Qwen2_5OmniTalkerModel",
-    "Qwen2_5OmniTalkerForConditionalGeneration",
+    "Qwen2_5OmniTalkerForConditionalGeneration",  # 三个 sub models 中的第二个， talker
     "Qwen2_5OmniToken2WavDiTModel",
     "Qwen2_5OmniToken2WavBigVGANModel",
-    "Qwen2_5OmniToken2WavModel",
+    "Qwen2_5OmniToken2WavModel",                  # 三个 sub models 中的第三个：audio token => audio
     "Qwen2_5OmniPreTrainedModel",
     "Qwen2_5OmniPreTrainedModelForConditionalGeneration",
 ]
