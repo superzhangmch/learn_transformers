@@ -343,8 +343,8 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
         audio_token_id = self.config.audio_token_id
         vision_start_token_id = self.config.vision_start_token_id
         audio_start_token_id = self.config.audio_start_token_id
-        position_id_per_seconds = self.config.position_id_per_seconds
-        seconds_per_chunk = self.config.seconds_per_chunk
+        position_id_per_seconds = self.config.position_id_per_seconds # 默认是 25
+        seconds_per_chunk = self.config.seconds_per_chunk             # 默认是 2
 
         mrope_position_deltas = []
         if input_ids is not None and (image_grid_thw is not None or video_grid_thw is not None):
@@ -394,22 +394,28 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                     else:
                         ed_audio = len(input_tokens) + 1
                     min_ed = min(ed_image, ed_video, ed_audio)
-                    if min_ed == ed_audio:
+                    if min_ed == ed_audio: # 处理 audio 
                         text_len = min_ed - st - 1
-                        if text_len != 0:
+                        if text_len != 0: # 若audio前面有 text，处理下这段 text
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
                             llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+
+                        # 处理特殊token <|audio_start|>
                         bos_len = 1
                         llm_pos_ids_list.append(torch.arange(bos_len).view(1, -1).expand(3, -1) + st_idx)
 
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
-                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1
-                        llm_pos_ids = torch.arange(audio_len).view(1, -1).expand(3, -1) + st_idx
+                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1           # audio_len = 原始长度 / 4. 为啥这样？
+                                            # 原因是：每个 audio frame 是 40ms，hop size=10ms，所以其实是1秒有 100 帧。除以4是为了弄成每秒 25 帧
+                                            # 可能 audio encoder 内有100 => 25 的下采样什么的。
+                        llm_pos_ids = torch.arange(audio_len).view(1, -1).expand(3, -1) + st_idx     # 生成 (t=h=w)且顺次加 1 的 pos_ids
                         llm_pos_ids_list.append(llm_pos_ids)
 
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+
+                        # 处理特殊token <|audio_end|>
                         eos_len = 1
                         llm_pos_ids_list.append(torch.arange(eos_len).view(1, -1).expand(3, -1) + st_idx)
 
@@ -417,7 +423,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         audio_idx += 1
                         remain_audios -= 1
 
-                    elif min_ed == ed_image:
+                    elif min_ed == ed_image: # image
                         text_len = min_ed - st - 1
                         if text_len != 0:
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
@@ -446,7 +452,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         image_idx += 1
                         remain_images -= 1
 
-                    elif min_ed == ed_video and not use_audio_in_video: 
+                    elif min_ed == ed_video and not use_audio_in_video: # video
                         text_len = min_ed - st - 1
                         if text_len != 0:
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
@@ -477,7 +483,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         video_idx += 1
                         remain_videos -= 1
 
-                    elif min_ed == ed_video and use_audio_in_video: # 带音频的视频怎么处理。按paper是每两秒切一刀，每一段先来video，接着是audio
+                    elif min_ed == ed_video and use_audio_in_video: # 带音频的视频怎么处理。按paper是每两秒切一刀切成 chunk，每一chunk：先来 video，接着是audio
                         text_len = min_ed - st - 2
                         if text_len != 0: # 如果 video 前面有 text
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
@@ -494,7 +500,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
 
                         # 给 audio 生成 pos_ids
-                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1              # 原始 seqlen 除 4
+                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1              # 原始 seqlen 除 4。原因见上面解释
                         audio_llm_pos_ids = torch.arange(audio_len).view(1, -1).expand(3, -1) + st_idx  # 生成 (t=h=w)，顺次加 1 的 pos_ids
 
                         # 给 video 生成 pos_ids
@@ -504,9 +510,12 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         t_index = (torch.arange(grid_t) * second_per_grids[video_idx].cpu().float() * position_id_per_seconds).long()
                         video_llm_pos_ids = self.get_llm_pos_ids_for_vision(st_idx, video_idx, spatial_merge_size, t_index, grid_hs, grid_ws)
 
-                        # 切成块
-                        t_ntoken_per_chunk = int(position_id_per_seconds * seconds_per_chunk)
-                        video_chunk_indexes = self.get_chunked_index(video_llm_pos_ids[0], t_ntoken_per_chunk, st_idx)
+                        # 切成 chunk
+                        t_ntoken_per_chunk = int(position_id_per_seconds * seconds_per_chunk) # seconds_per_chunk：一个chunk 多少秒(paper中是2秒，这里确实是取值 2)
+                                                                                              # position_id_per_seconds: 一秒有多少个pos id（paper中是40ms一个audio frame，hop size=10ms，
+                                                                                              #     所以一秒有100帧，但是见上面最终除以了4，所以是25帧——即每秒有25个 pos-id. 这里也确实默认取值是25)
+                                                                                              # 它们的乘积就是一个 chunk 有多少个位置id
+                        video_chunk_indexes = self.get_chunked_index(video_llm_pos_ids[0], t_ntoken_per_chunk, st_idx) # 从 st_idx 开始，每 t_ntoken_per_chunk 个，切分为一个 chunk
                         audio_chunk_indexes = self.get_chunked_index(audio_llm_pos_ids[0], t_ntoken_per_chunk, st_idx)
                         sub_len = 0
                         for j in range(max(len(video_chunk_indexes), len(audio_chunk_indexes))):
