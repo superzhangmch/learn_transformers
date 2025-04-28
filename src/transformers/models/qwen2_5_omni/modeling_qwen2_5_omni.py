@@ -279,6 +279,8 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
         second_per_grids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
+        TM-RoPE 实现在这里
+        
         Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
 
         Explanation:
@@ -444,7 +446,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         image_idx += 1
                         remain_images -= 1
 
-                    elif min_ed == ed_video and not use_audio_in_video:
+                    elif min_ed == ed_video and not use_audio_in_video: 
                         text_len = min_ed - st - 1
                         if text_len != 0:
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
@@ -475,31 +477,34 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         video_idx += 1
                         remain_videos -= 1
 
-                    elif min_ed == ed_video and use_audio_in_video:
+                    elif min_ed == ed_video and use_audio_in_video: # 带音频的视频怎么处理。按paper是每两秒切一刀，每一段先来video，接着是audio
                         text_len = min_ed - st - 2
-                        if text_len != 0:
+                        if text_len != 0: # 如果 video 前面有 text
                             st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
                             llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+
+                        # 特殊token：<|video_start|>
                         bos_len = 1
                         llm_pos_ids_list.append(torch.arange(bos_len).view(1, -1).expand(3, -1) + st_idx)
                         llm_pos_ids_list.append(torch.arange(bos_len).view(1, -1).expand(3, -1) + st_idx)
 
+                        # 获得前一个 token 的(t, h, w)的三者最大值，赋予 st_idx
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
-                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1
-                        audio_llm_pos_ids = torch.arange(audio_len).view(1, -1).expand(3, -1) + st_idx
+
+                        # 给 audio 生成 pos_ids
+                        audio_len = ((audio_seqlens[audio_idx] - 1) // 2 + 1 - 2) // 2 + 1              # 原始 seqlen 除 4
+                        audio_llm_pos_ids = torch.arange(audio_len).view(1, -1).expand(3, -1) + st_idx  # 生成 (t=h=w)，顺次加 1 的 pos_ids
+
+                        # 给 video 生成 pos_ids
                         grid_t = video_grid_thw[video_idx][0]
                         grid_hs = video_grid_thw[:, 1]
                         grid_ws = video_grid_thw[:, 2]
+                        t_index = (torch.arange(grid_t) * second_per_grids[video_idx].cpu().float() * position_id_per_seconds).long()
+                        video_llm_pos_ids = self.get_llm_pos_ids_for_vision(st_idx, video_idx, spatial_merge_size, t_index, grid_hs, grid_ws)
 
-                        t_index = (
-                            torch.arange(grid_t) * second_per_grids[video_idx].cpu().float() * position_id_per_seconds
-                        ).long()
-                        video_llm_pos_ids = self.get_llm_pos_ids_for_vision(
-                            st_idx, video_idx, spatial_merge_size, t_index, grid_hs, grid_ws
-                        )
-
+                        # 切成块
                         t_ntoken_per_chunk = int(position_id_per_seconds * seconds_per_chunk)
                         video_chunk_indexes = self.get_chunked_index(video_llm_pos_ids[0], t_ntoken_per_chunk, st_idx)
                         audio_chunk_indexes = self.get_chunked_index(audio_llm_pos_ids[0], t_ntoken_per_chunk, st_idx)
@@ -507,6 +512,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         for j in range(max(len(video_chunk_indexes), len(audio_chunk_indexes))):
                             video_chunk_index = video_chunk_indexes[j] if j < len(video_chunk_indexes) else None
                             audio_chunk_index = audio_chunk_indexes[j] if j < len(audio_chunk_indexes) else None
+                            # 每个块内，先排布 video 的 pos_ids, 接着排布 audio 的 pos_ids
                             if video_chunk_index is not None:
                                 sub_len += video_chunk_index[1] - video_chunk_index[0]
 
@@ -522,6 +528,8 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
                         video_len = video_grid_thw[video_idx].prod() // (spatial_merge_size**2)
 
                         st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+
+                        # 特殊token：<|video_end|>
                         eos_len = 1
                         llm_pos_ids_list.append(torch.arange(eos_len).view(1, -1).expand(3, -1) + st_idx)
                         llm_pos_ids_list.append(torch.arange(eos_len).view(1, -1).expand(3, -1) + st_idx)
