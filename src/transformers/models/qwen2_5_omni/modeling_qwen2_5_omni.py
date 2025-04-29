@@ -4656,7 +4656,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         # === talker input：talker_inputs_embeds
         
         talker_inputs_embeds = thinker_hidden_states[0] + thinker_token_embeds[0]                                     #（1） 注意 thinker_hidden_states[0] 是 user_input 所有 tokens 的 hidden
-        
+                                                                                                                      # 用加法，融合两种特征
         thinker_embed_tokens = self.thinker.get_input_embeddings()
         talker_text_bos_token = torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.thinker.device)
         talker_text_bos_embed = thinker_embed_tokens(talker_text_bos_token).to(self.talker.device)                    # (2)
@@ -4693,10 +4693,15 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
                 [kwargs["attention_mask"], kwargs["attention_mask"].new_ones((1, 2))], dim=1
             ).to(self.talker.device)
 
+        '''
+        print ('talker input', talker_input_ids.shape, talker_input_text_ids.shape, thinker_reply_part.shape, talker_inputs_embeds.shape)
+        output(假设 thinker 的输入 tokens 数是 5373, 输出tokens 数是 77. hidden_dim=3584. 追加了两个特殊token，所以下面是5475):
+        talker input torch.Size([1, 5475]) torch.Size([1, 5475]) torch.Size([1, 77, 3584]) torch.Size([1, 5475, 3584])
+        '''
         talker_result = self.talker.generate(
-            input_ids=talker_input_ids,             # 都是 token id
+            input_ids=talker_input_ids,             # 都是 token id。talker 专用的 token id 粒度 input，不包含用户的input
 
-            input_text_ids=talker_input_text_ids,   # 都是 token id
+            input_text_ids=talker_input_text_ids,   # 都是 token id。 实际就是 thinker 的 input
             thinker_reply_part=thinker_reply_part,  # 对应 talker_input_text_ids. 乃 embds
                                                     # 主体是 torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1)， 即 thinker output 的embs
 
