@@ -3033,7 +3033,7 @@ class Qwen2_5OmniTalkerForConditionalGeneration(Qwen2_5OmniPreTrainedModelForCon
                 or self.rope_deltas is None
             ):
                 position_ids, rope_deltas = self.get_rope_index(
-                    input_text_ids,
+                    input_text_ids,     # talker.generate(..) 的 4 个参数之一的 input_text_ids 只用于这里
                     image_grid_thw,
                     video_grid_thw,
                     attention_mask,
@@ -3059,11 +3059,18 @@ class Qwen2_5OmniTalkerForConditionalGeneration(Qwen2_5OmniPreTrainedModelForCon
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
         if inputs_embeds is None:
+            # talker 生成第二个以及更多的 audio token 时，走这里: 这时是接龙方式，一次只生成一个 token
             # 1. Inference tokens after second token
             codec_embeds = self.get_input_embeddings()(input_ids)
-            inputs_embeds = codec_embeds + thinker_reply_part[:, :1, :]
+            inputs_embeds = codec_embeds + thinker_reply_part[:, :1, :] # talker.generate(..) 的 4 个参数之一的 thinker_reply_part: 只用于这里。
+                                                                        # 每生成一个 audio token，则从thinker_reply_part(即 thinker 的output）里顺次挪过来一个，并特征累加
+                                                                        # 一直到用完后后，用固定的 pad_token (则从thinker_reply_part的最后两个token为：EOS， PAD)
             if thinker_reply_part.shape[1] > 1:
-                thinker_reply_part = thinker_reply_part[:, 1:, :]
+                thinker_reply_part = thinker_reply_part[:, 1:, :] # 若 thinker_reply_part.len == 1, 则一直用最后一个，而最后一个是 PAD_token
+        else:
+            # 这是是在做 talker 的 prefill 操作
+            pass
+            # talker.generate(..) 的 4 个参数之一的 inputs_embeds: 只用于talker 生成第一个audio token的时候。也就是只用于这里。
 
         talker_lm_input = self.thinker_to_talker_proj(inputs_embeds)
 
@@ -3072,9 +3079,9 @@ class Qwen2_5OmniTalkerForConditionalGeneration(Qwen2_5OmniPreTrainedModelForCon
 
         outputs = self.model(
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=talker_lm_input,
+            position_ids=position_ids, 
+            past_key_values=past_key_values,  # kv-cache
+            inputs_embeds=talker_lm_input,    # 当前token。要基于当前token与kv-cache，生成下一个token
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -4701,12 +4708,15 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
         talker_result = self.talker.generate(
             input_ids=talker_input_ids,             # 都是 token id。talker 专用的 token id 粒度 input，不包含用户的input
 
-            input_text_ids=talker_input_text_ids,   # 都是 token id。 实际就是 thinker 的 input
+            input_text_ids=talker_input_text_ids,   # 都是 token id。 实际就是 thinker 的 input。 talker 中，只是用来生成 LLM 的 position id 的，不用于其他。
+
             thinker_reply_part=thinker_reply_part,  # 对应 talker_input_text_ids. 乃 embds
                                                     # 主体是 torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1)， 即 thinker output 的embs
+                                                    # 在 talker 内部：它会和 talker 的 audio_token_ids 的 codec_embeds 相加，作为新的 codec_embeds
 
-            inputs_embeds=talker_inputs_embeds,     # 主体是thinker_hidden_states[0] + thinker_token_embeds[0]， 即 user_input 的 embs
+            inputs_embeds=talker_inputs_embeds,     # 主体是 thinker_hidden_states[0] + thinker_token_embeds[0]，即 user_input 的 embs
                                                     # note: talker_inputs_embeds 用了 hidden[0], thinker_reply_part 用了 hidden[1:]
+                                                    # 在 talker 内部：当做前序 token embds，用于生成第一个 audio codec token，这之后，它就不发挥作用了。
 
             attention_mask=talker_attention_mask,
             suppress_tokens=[self.talker.codec_bos_token],
