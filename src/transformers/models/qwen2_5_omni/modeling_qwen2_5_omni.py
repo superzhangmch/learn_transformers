@@ -4606,25 +4606,19 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             )
             embeds_to_talker.masked_scatter_(video_mask, video_mask_tensor)
 
-        processed_thinker_hidden = (
-            (embeds_to_talker,) + thinker_result.hidden_states[0][1:],
-        ) + thinker_result.hidden_states[1:]
+        processed_thinker_hidden = ((embeds_to_talker,) + thinker_result.hidden_states[0][1:],) + thinker_result.hidden_states[1:]
         
-        thinker_token_embeds = [
-            token_hidden_states[0].to(self.talker.device) for token_hidden_states in processed_thinker_hidden
-        ]
-        thinker_hidden_states = [
-            token_hidden_states[-1].to(self.talker.device) for token_hidden_states in processed_thinker_hidden
-        ]
+        thinker_token_embeds = [token_hidden_states[0].to(self.talker.device) for token_hidden_states in processed_thinker_hidden]
+        thinker_hidden_states = [token_hidden_states[-1].to(self.talker.device) for token_hidden_states in processed_thinker_hidden]
 
-        # ===  talker input：talker_input_text_ids
+        # ===  talker input：talker_input_text_ids                                                     # （A)
         talker_text_bos_token = speaker_params["bos_token"]
-        thinker_generate_ids = thinker_result.sequences[:, input_ids.size(1) :].to(self.talker.device)
+        thinker_generate_ids = thinker_result.sequences[:, input_ids.size(1) :].to(self.talker.device) # 跳过 input，取 output
         talker_input_text_ids = torch.cat( # talker input。它的shape，比 input_ids 多了 2
             [
                 input_ids.to(self.talker.device),                                                      # 原始 prompt 的 token ids
                 torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.talker.device),  # 分隔符特殊token
-                thinker_generate_ids[:, :1],                                                           # thinker 生成的结果的 token ids
+                thinker_generate_ids[:, :1],                                                           # thinker 生成的结果的第一个 token ids
             ],
             dim=-1,
         )
@@ -4640,36 +4634,36 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             dim=1,
         )
 
+        # === talker input：talker_inputs_embeds
+        
+        talker_inputs_embeds = thinker_hidden_states[0] + thinker_token_embeds[0]                                     # （1）
+        
         thinker_embed_tokens = self.thinker.get_input_embeddings()
-        thinker_reply_part = torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1)
-        talker_inputs_embeds = thinker_hidden_states[0] + thinker_token_embeds[0]
         talker_text_bos_token = torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.thinker.device)
-        talker_text_bos_embed = thinker_embed_tokens(talker_text_bos_token).to(self.talker.device)
-        talker_inputs_embeds = torch.cat(
+        talker_text_bos_embed = thinker_embed_tokens(talker_text_bos_token).to(self.talker.device)                     # (2)
+       
+        thinker_reply_part = torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1) # （3）
+        
+        talker_inputs_embeds = torch.cat( # 对应于 model input 变量：(A)=talker_input_text_ids
             [
-                talker_inputs_embeds,
-                talker_text_bos_embed,
-                thinker_reply_part[:, :1, :],
+                talker_inputs_embeds,           # （1）
+                talker_text_bos_embed,          # （2） text_bos token 的 embd
+                thinker_reply_part[:, :1, :],   # （3） 这里用了 thinker_reply_part 的第一个token，这个应该是什么特殊token，要当做 input 用
             ],
             dim=1,
-        )
+          )
 
-        eos_embedding = thinker_embed_tokens(
-               torch.tensor([[self.talker.text_eos_token]], dtype=torch.long, device=self.thinker.device)
-           ).to(self.talker.device)
-
-        pad_embedding = thinker_embed_tokens(
-               torch.tensor([[self.talker.text_pad_token]], dtype=torch.long, device=self.thinker.device)
-           ).to(self.talker.device)
-
+        # === talker input：thinker_reply_part
+        eos_embedding = thinker_embed_tokens(torch.tensor([[self.talker.text_eos_token]], dtype=torch.long, device=self.thinker.device)).to(self.talker.device) # （4）
+        pad_embedding = thinker_embed_tokens(torch.tensor([[self.talker.text_pad_token]], dtype=torch.long, device=self.thinker.device)).to(self.talker.device) # （5）
         thinker_reply_part = torch.cat( # talker input
             [
-                thinker_reply_part[:, 1:, :],
-                eos_embedding,
-                pad_embedding,
+                thinker_reply_part[:, 1:, :],     # （3）这里用了 thinker_reply_part的首歌 token 之外的部分
+                eos_embedding,                    # （4）
+                pad_embedding,                    # （5）
             ],
             dim=1,
-        )
+          )
 
         # === talker input: talker_attention_mask
         talker_attention_mask = None
