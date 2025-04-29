@@ -279,7 +279,7 @@ class Qwen2_5OmniPreTrainedModelForConditionalGeneration(Qwen2_5OmniPreTrainedMo
         second_per_grids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        TM-RoPE 实现在这里
+        TM-RoPE 实现在这里. thinker 与 talker 都用一次
         
         Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
 
@@ -4577,7 +4577,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             return thinker_result
 
         # 2. Generate speech tokens from talker module
-        embeds_to_talker = thinker_result.hidden_states[0][0].clone().to(self.talker.device)
+        embeds_to_talker = thinker_result.hidden_states[0][0].clone().to(self.talker.device) # h[0][0]：获取用户 input 的 tokens embs。为啥是？看下面注释
         if thinker_kwargs.get("input_features", None) is not None: # 如果input中有 audio 则会进入此分支
             audio_ids_mask = input_ids == self.config.thinker_config.audio_token_index
             audio_mask = audio_ids_mask.unsqueeze(-1).expand_as(embeds_to_talker).to(embeds_to_talker.device)
@@ -4606,10 +4606,29 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             )
             embeds_to_talker.masked_scatter_(video_mask, video_mask_tensor)
 
+        # embeds_to_talker 来自于 hidden_states[0][0], 随意下面的操作[ （h[0][0]，） + h[0][1:] ] + h[1:]，其实就把embed修改后，还原原来的 hidden_states
         processed_thinker_hidden = ((embeds_to_talker,) + thinker_result.hidden_states[0][1:],) + thinker_result.hidden_states[1:]
         
-        thinker_token_embeds = [token_hidden_states[0].to(self.talker.device) for token_hidden_states in processed_thinker_hidden]
-        thinker_hidden_states = [token_hidden_states[-1].to(self.talker.device) for token_hidden_states in processed_thinker_hidden]
+        ''' 
+        构造一个例子，打印下 processed_thinker_hidden：
+        ii = 0
+        for aa in processed_thinker_hidden:
+            ii += 1
+            out = []
+            for bb in aa: out.append(bb.shape)
+            print (" ", ii, ":", out[0], "...", out[-1], len(out))
+   
+        输出为：
+          1 : torch.Size([1, 5473, 3584]) torch.Size([1, 5473, 3584]) 29  # 29 = 1 + 28，表示有 28 个 transformer blocks，再加一个 token embedding 层。
+                                                                          # 5373 表示用户的多模态输入的总共的prompt 长度是 5473. 这接下来的一个一个的是 thinker 的输出
+          2 : torch.Size([1, 1, 3584]) ... torch.Size([1, 1, 3584]) 29
+          3 : torch.Size([1, 1, 3584]) ... torch.Size([1, 1, 3584]) 29
+          4 : torch.Size([1, 1, 3584]) ... torch.Size([1, 1, 3584]) 29
+          5 : torch.Size([1, 1, 3584]) ... torch.Size([1, 1, 3584]) 29
+        '''
+
+        thinker_token_embeds  = [token_hidden_states[ 0].to(self.talker.device) for token_hidden_states in processed_thinker_hidden] # 注意：第一层是 token embedding
+        thinker_hidden_states = [token_hidden_states[-1].to(self.talker.device) for token_hidden_states in processed_thinker_hidden] # 注意：最后一层是 model output 
 
         # ===  talker input：talker_input_text_ids                                                     # （A)
         talker_text_bos_token = speaker_params["bos_token"]
@@ -4636,14 +4655,16 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
 
         # === talker input：talker_inputs_embeds
         
-        talker_inputs_embeds = thinker_hidden_states[0] + thinker_token_embeds[0]                                     # （1）
+        talker_inputs_embeds = thinker_hidden_states[0] + thinker_token_embeds[0]                                     #（1） 注意 thinker_hidden_states[0] 是 user_input 所有 tokens 的 hidden
         
         thinker_embed_tokens = self.thinker.get_input_embeddings()
         talker_text_bos_token = torch.tensor([[talker_text_bos_token]], dtype=torch.long, device=self.thinker.device)
-        talker_text_bos_embed = thinker_embed_tokens(talker_text_bos_token).to(self.talker.device)                     # (2)
+        talker_text_bos_embed = thinker_embed_tokens(talker_text_bos_token).to(self.talker.device)                    # (2)
        
-        thinker_reply_part = torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1) # （3）
-        
+        thinker_reply_part = torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1) #（3） 注意 thinker_hidden_states[0] 是 user_input 所有 tokens 的 hidden
+                                                                                                                      #      而 thinker_hidden_states[i], i>0 是 thinker 的第 i 个 output token 的 hidden
+                                                                                                                      #      所以这里用 thinker_hidden_states[1:]。thinker_token_embeds 也一样
+
         talker_inputs_embeds = torch.cat( # 对应于 model input 变量：(A)=talker_input_text_ids
             [
                 talker_inputs_embeds,           # （1）
@@ -4673,10 +4694,15 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
             ).to(self.talker.device)
 
         talker_result = self.talker.generate(
-            input_ids=talker_input_ids,
-            input_text_ids=talker_input_text_ids,
-            thinker_reply_part=thinker_reply_part,
-            inputs_embeds=talker_inputs_embeds,
+            input_ids=talker_input_ids,             # 都是 token id
+
+            input_text_ids=talker_input_text_ids,   # 都是 token id
+            thinker_reply_part=thinker_reply_part,  # 对应 talker_input_text_ids. 乃 embds
+                                                    # 主体是 torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1)， 即 thinker output 的embs
+
+            inputs_embeds=talker_inputs_embeds,     # 主体是thinker_hidden_states[0] + thinker_token_embeds[0]， 即 user_input 的 embs
+                                                    # note: talker_inputs_embeds 用了 hidden[0], thinker_reply_part 用了 hidden[1:]
+
             attention_mask=talker_attention_mask,
             suppress_tokens=[self.talker.codec_bos_token],
             **{k: (v.to(self.talker.device) if torch.is_tensor(v) else v) for k, v in talker_kwargs.items()},
