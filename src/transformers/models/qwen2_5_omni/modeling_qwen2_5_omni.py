@@ -3090,6 +3090,7 @@ class Qwen2_5OmniTalkerForConditionalGeneration(Qwen2_5OmniPreTrainedModelForCon
 
         hidden_states = outputs[0]
         logits = self.codec_head(hidden_states)
+        # training 的时候，是否还有个 text_head? 从paper中插图看，有可能。
         logits = logits.float()
 
         loss = None
@@ -4714,7 +4715,7 @@ class Qwen2_5OmniForConditionalGeneration(Qwen2_5OmniPreTrainedModel, Generation
                                                     # 主体是 torch.cat(thinker_hidden_states[1:], dim=1) + torch.cat(thinker_token_embeds[1:], dim=1)， 即 thinker output 的embs
                                                     # 在 talker 内部：它会和 talker 的 audio_token_ids 的 codec_embeds 相加，作为新的 codec_embeds
 
-            inputs_embeds=talker_inputs_embeds,     # 主体是 thinker_hidden_states[0] + thinker_token_embeds[0]，即 user_input 的 embs
+            inputs_embeds=talker_inputs_embeds,     # 主体是 thinker_hidden_states[0] + thinker_token_embeds[0]，即 user_input 的 embs(不包括thinker output）
                                                     # note: talker_inputs_embeds 用了 hidden[0], thinker_reply_part 用了 hidden[1:]
                                                     # 在 talker 内部：当做前序 token embds，用于生成第一个 audio codec token，这之后，它就不发挥作用了。
 
