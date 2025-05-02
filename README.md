@@ -13,7 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-
+<ul>
+    <li> 对这个做了标注：https://github.com/superzhangmch/learn_transformers/edit/main/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py </li>
+</ul>
+<hr>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://huggingface.co/datasets/huggingface/documentation-images/raw/main/transformers-logo-dark.svg">
